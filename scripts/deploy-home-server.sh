@@ -2,50 +2,56 @@
 #
 # deploy-home-server.sh
 # ---------------------------------------------------------------------------
-# Push this checkout to the home server and rebuild the app container.
-# Run it from Windows (Git Bash) or from the server itself:
+# Ship the current commit to the home server and rebuild the container.
 #
 #     bash scripts/deploy-home-server.sh
 #
-# The app is a container on the MemorySphere network (ms-scripture); Caddy
-# publishes it at /scripture/ on the existing HTTPS and LAN entry points, so
-# no host port is opened.
+# The server keeps a real git checkout at /srv/memorysphere/scripture, so this
+# is: push -> pull -> rebuild. The app is a container on the MemorySphere
+# network (ms-scripture) and Caddy publishes it at /scripture/ on the existing
+# HTTPS and LAN entry points, so no host port is opened.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SERVER="${SERVER:-wwkzorin@192.168.0.221}"
 REMOTE_DIR="${REMOTE_DIR:-/srv/memorysphere/scripture}"
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_REMOTE="${DEPLOY_REMOTE:-fork}"   # local remote the server pulls from
+BRANCH="${BRANCH:-main}"
 
-cd "$APP_DIR"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-echo "==> copying sources to ${SERVER}:${REMOTE_DIR}"
-tar --exclude=./node_modules --exclude=./dist --exclude=./.git --exclude=./logs -czf - . \
-  | ssh "$SERVER" "mkdir -p '$REMOTE_DIR' && tar -xzf - -C '$REMOTE_DIR'"
+COMMIT="$(git rev-parse --short HEAD)"
+BRANCH_NOW="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$BRANCH_NOW" != "$BRANCH" ]; then
+  echo "Refusing to deploy: on '$BRANCH_NOW', expected '$BRANCH'." >&2
+  exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  echo "Refusing to deploy: working tree has uncommitted changes." >&2
+  exit 1
+fi
 
-echo "==> normalising line endings (Windows checkouts carry CRLF)"
-ssh "$SERVER" "cd '$REMOTE_DIR' && \
-  find . -type f \\( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.mjs' \
-    -o -name '*.json' -o -name '*.html' -o -name '*.css' -o -name '*.yaml' \
-    -o -name '*.yml' -o -name '*.md' -o -name '*.txt' -o -name '*.sh' \\) \
-    -exec dos2unix -q {} + ; \
-  dos2unix -q Dockerfile .dockerignore 2>/dev/null || true"
+echo "==> publishing $COMMIT to '$DEPLOY_REMOTE'"
+git push "$DEPLOY_REMOTE" "$BRANCH"
 
-echo "==> building and restarting the container"
-ssh "$SERVER" "cd '$REMOTE_DIR' && docker compose -f compose.home-server.yaml up -d --build 2>&1 | tail -6"
+echo "==> updating the server checkout"
+ssh "$SERVER" "cd '$REMOTE_DIR' && git fetch --quiet origin && git merge --ff-only origin/$BRANCH && git log --oneline -1"
+
+echo "==> rebuilding the container"
+ssh "$SERVER" "cd '$REMOTE_DIR' && docker compose -f compose.home-server.yaml up -d --build 2>&1 | tail -4"
 
 echo "==> waiting for the health check"
+ok=0
 for _ in $(seq 1 30); do
   sleep 2
   if ssh "$SERVER" "docker exec ms-scripture node -e \"fetch('http://127.0.0.1:3000/scripture/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"" 2>/dev/null; then
-    echoed=1
-    echo "OK"
+    ok=1
     break
   fi
 done
 
-[ "${echoed:-0}" = "1" ] || { echo "Health check failed - see: ssh $SERVER 'docker logs ms-scripture'"; exit 1; }
+[ "$ok" = "1" ] || { echo "Health check failed - see: ssh $SERVER 'docker logs ms-scripture'"; exit 1; }
 
 echo ""
-echo "  LAN     : http://192.168.0.221:8080/scripture/"
+echo "  LAN      : http://192.168.0.221:8080/scripture/"
 echo "  Tailscale: https://wwkzorin-ux330cak.taila44cf2.ts.net/scripture/"
