@@ -1,0 +1,84 @@
+BILINGUAL SCRIPTURE READER - HOME SERVER SETUP
+==============================================
+Last set up: 2026-11-20 on the MemorySphere home server (Zorin notebook).
+
+WHERE IT RUNS
+-------------
+  Host        : wwkzorin@192.168.0.221 (Zorin OS 18.1, always on)
+  App dir     : /srv/memorysphere/scripture
+  Runtime     : Docker container "ms-scripture" on the memorysphere_ms network
+                (mem_limit 256m, read_only, healthcheck every 30 s)
+  Gateway     : the existing ms-caddy, which routes /scripture/* to it
+  Ports opened: none - the app is reachable only through Caddy
+
+The app is path-mounted rather than given its own port, per the server's
+"never expose a new port" rule. It is built with APP_BASE_PATH=/scripture and
+its client uses relative URLs (vite base './'), so both these work:
+
+  LAN       http://192.168.0.221:8080/scripture/
+  Tailscale https://wwkzorin-ux330cak.taila44cf2.ts.net/scripture/
+            (same URL from any device signed into the tailnet)
+
+Health check: /scripture/api/health          Logs: docker logs ms-scripture
+
+UPDATING THE APP
+----------------
+From Windows (Git Bash) in this folder:
+
+  bash scripts/deploy-home-server.sh
+
+That copies the sources, normalises CRLF (Windows checkouts carry it; it breaks
+bash and Dockerfiles), rebuilds the image, restarts the container and waits for
+/scripture/api/health. Equivalent by hand on the server:
+
+  cd /srv/memorysphere/scripture && docker compose -f compose.home-server.yaml up -d --build
+
+Local development is unchanged: npm run dev (or npm start) serves the app at
+http://localhost:3000/ because APP_BASE_PATH is unset outside the container.
+
+FILES ADDED FOR THE DEPLOYMENT
+------------------------------
+  Dockerfile                  multi-stage build (vite build, then node server.ts)
+  compose.home-server.yaml    the ms-scripture service (external network: ms)
+  .dockerignore               keeps node_modules/dist/logs out of the build
+  scripts/deploy-home-server.sh   one-command deploy from the workstation
+  server.ts                   honours APP_BASE_PATH (API + static paths)
+  vite.config.ts              base './' so assets work under a path prefix
+  src/components/ScriptureReader.tsx   API calls use import.meta.env.BASE_URL
+
+CADDY CHANGES (on the server)
+-----------------------------
+Both site blocks in /srv/memorysphere/Caddyfile now contain:
+
+  	@scripture_root path /scripture
+  	redir @scripture_root /scripture/ 308
+  	handle /scripture/* {
+  		reverse_proxy ms-scripture:3000
+  	}
+
+The block was also added to the generator so a regeneration keeps it:
+  tools/enable-https.sh   (LAN block heredoc)
+  Caddyfile.https         (HTTPS template)
+Backups of the pre-change Caddyfile: /srv/memorysphere/Caddyfile.bak-<timestamp>
+
+Reload after editing by hand (note the </dev/null - see the server brief):
+  docker exec ms-caddy caddy reload --config /etc/caddy/Caddyfile </dev/null
+
+WHY NOT A HOST PROCESS / PORT 3000
+----------------------------------
+The server's rules: nothing new is published (only 443 and 8080 exist), apps
+are reverse-proxied through Caddy, and each is a container with a mem_limit.
+A host systemd Node service would have meant opening 3000 and bypassing the
+gateway, so the app runs as a container and inherits TLS, logging and access
+control from Caddy.
+
+NOTES
+-----
+- Chapters are cached in memory for 24 h; the cache resets when the container
+  restarts (docker compose restart ms-scripture).
+- The container needs outbound internet: it scrapes churchofjesuschrist.org and
+  bolls.life server-side.
+- RAM cost is small: roughly 60-80 MB for the Node process inside the 256m cap.
+- The Windows mini PC no longer runs the service; its scheduled task and
+  firewall rule were removed on 2026-11-20. run.bat there is for development
+  only.

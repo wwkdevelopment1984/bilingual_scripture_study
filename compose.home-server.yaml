@@ -1,0 +1,36 @@
+services:
+  scripture:
+    build: .
+    container_name: ms-scripture
+    restart: unless-stopped
+    init: true
+    mem_limit: 256m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      # Mounted by Caddy at https://<tailscale-name>/scripture/
+      APP_BASE_PATH: /scripture
+    networks:
+      - ms
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/scripture/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  ms:
+    external: true
+    name: memorysphere_ms

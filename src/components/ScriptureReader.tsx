@@ -34,6 +34,10 @@ import type {
   VerseSegment,
 } from '../types/scripture.ts';
 
+// Resolves to "./api" in the build, so the app works both at "/" and behind
+// a reverse-proxy path prefix such as "/scripture/" (see vite.config base).
+const API_BASE = `${import.meta.env.BASE_URL}api`;
+
 const STORAGE_KEY = 'bilingual-scripture-reader-prefs-v1';
 const HIGHLIGHTS_STORAGE_KEY = 'bilingual-scripture-highlights-v1';
 const MIN_FONT_SIZE = 15;
@@ -410,7 +414,7 @@ export default function ScriptureReader() {
           params.set('refresh', '1');
         }
 
-        const res = await fetch(`/api/scripture?${params.toString()}`, {
+        const res = await fetch(`${API_BASE}/scripture?${params.toString()}`, {
           signal: controller.signal,
         });
 
@@ -622,7 +626,7 @@ export default function ScriptureReader() {
           volume,
           page: String(page),
         });
-        const res = await fetch(`/api/search?${params.toString()}`, {
+        const res = await fetch(`${API_BASE}/search?${params.toString()}`, {
           signal: controller.signal,
         });
         const json = await res.json();

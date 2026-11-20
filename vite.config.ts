@@ -6,6 +6,10 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // Relative asset URLs so the same build works at "/" (local dev,
+    // `npm start`) and behind a path prefix such as "/scripture/" (the
+    // home server, reverse-proxied by Caddy).
+    base: './',
     plugins: [
       react(),
       tailwindcss(),
