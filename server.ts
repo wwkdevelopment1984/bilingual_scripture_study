@@ -1,0 +1,95 @@
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import {
+  getBilingualChapter,
+  ScriptureFetchError,
+} from './server/scriptureFetcher.ts';
+import { searchScriptures } from './server/scriptureSearch.ts';
+import type { SearchVolumeFilter } from './src/types/scripture.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function startServer() {
+  const app = express();
+  const PORT = Number(process.env.PORT) || 3000;
+
+  app.get('/api/health', (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.get('/api/scripture', async (req, res) => {
+    const book = typeof req.query.book === 'string' ? req.query.book : 'john';
+    const chapter =
+      typeof req.query.chapter === 'string' ? req.query.chapter : '1';
+    const bypassCache =
+      req.query.refresh === '1' || req.query.refresh === 'true';
+
+    try {
+      const data = await getBilingualChapter({ book, chapter, bypassCache });
+      res.json(data);
+    } catch (err) {
+      if (err instanceof ScriptureFetchError) {
+        res.status(err.statusCode).json({
+          error: err.message,
+          retryable: err.retryable,
+          details: err.details,
+        });
+        return;
+      }
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Unexpected server error',
+        retryable: true,
+      });
+    }
+  });
+
+  app.get('/api/search', async (req, res) => {
+    const query = typeof req.query.q === 'string' ? req.query.q : '';
+    const volume = (
+      typeof req.query.volume === 'string' ? req.query.volume : 'all'
+    ) as SearchVolumeFilter;
+    const page =
+      typeof req.query.page === 'string' ? parseInt(req.query.page, 10) : 1;
+
+    try {
+      const data = await searchScriptures({
+        query,
+        volume,
+        page: Number.isFinite(page) && page > 0 ? page : 1,
+        pageSize: 15,
+      });
+      res.json(data);
+    } catch (err) {
+      res.status(502).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Unable to complete scripture search.',
+        retryable: true,
+      });
+    }
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

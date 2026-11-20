@@ -1,0 +1,6 @@
+{
+  "name": "Bilingual Scripture Reader",
+  "description": "Read English and Chinese scriptures side-by-side or interleaved across the Old Testament, New Testament, Book of Mormon, Doctrine and Covenants, and Pearl of Great Price.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
