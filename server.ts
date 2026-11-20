@@ -15,11 +15,16 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.get('/api/health', (_req, res) => {
+  // When the app is reverse-proxied under a path prefix (e.g. Caddy mounts it
+  // at /scripture on the home server) set APP_BASE_PATH=/scripture. Empty
+  // means "serve at the root", which is the default for local runs.
+  const BASE_PATH = (process.env.APP_BASE_PATH || '').replace(/\/+$/, '');
+
+  app.get(`${BASE_PATH}/api/health`, (_req, res) => {
     res.json({ ok: true });
   });
 
-  app.get('/api/scripture', async (req, res) => {
+  app.get(`${BASE_PATH}/api/scripture`, async (req, res) => {
     const book = typeof req.query.book === 'string' ? req.query.book : 'john';
     const chapter =
       typeof req.query.chapter === 'string' ? req.query.chapter : '1';
@@ -45,7 +50,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/search', async (req, res) => {
+  app.get(`${BASE_PATH}/api/search`, async (req, res) => {
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     const volume = (
       typeof req.query.volume === 'string' ? req.query.volume : 'all'
@@ -82,13 +87,26 @@ async function startServer() {
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    if (BASE_PATH) {
+      // Prefixed deployment: /scripture/ serves the SPA, /scripture/<asset>
+      // serves the build output, and unknown /scripture/* paths fall back to
+      // index.html so client-side navigation keeps working.
+      app.use(BASE_PATH, express.static(distPath));
+      app.get(BASE_PATH, (_req, res) => res.redirect(308, `${BASE_PATH}/`));
+      app.get(`${BASE_PATH}/*`, (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://localhost:${PORT}`);
+    console.log(
+      `Server listening on http://localhost:${PORT}${BASE_PATH || '/'}`
+    );
   });
 }
 
