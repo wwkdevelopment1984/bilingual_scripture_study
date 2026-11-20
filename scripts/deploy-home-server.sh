@@ -52,6 +52,7 @@ done
 
 [ "$ok" = "1" ] || { echo "Health check failed - see: ssh $SERVER 'docker logs ms-scripture'"; exit 1; }
 
+echo "OK"
 echo ""
 echo "  LAN      : http://192.168.0.221:8080/scripture/"
 echo "  Tailscale: https://wwkzorin-ux330cak.taila44cf2.ts.net/scripture/"
