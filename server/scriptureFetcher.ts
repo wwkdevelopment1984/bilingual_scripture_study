@@ -20,6 +20,7 @@ interface ParsedLanguageChapter {
   segments: Map<number, VerseSegment[]>;
   footnotes: Record<string, ScriptureFootnote>;
   summary: string;
+  intro: string;
   source: string;
 }
 
@@ -281,6 +282,13 @@ function parseChurchOfJesusChristHtml(
     ? normalizeChineseWhitespace(rawSummary)
     : normalizeWhitespace(rawSummary);
 
+  const introEl = $('.study-intro').first().clone();
+  introEl.find('sup, button, [class*="iconPointer"]').remove();
+  const rawIntro = introEl.text();
+  const intro = isChinese
+    ? normalizeChineseWhitespace(rawIntro)
+    : normalizeWhitespace(rawIntro);
+
   $('p.verse').each((idx, el) => {
     const verseEl = $(el).clone();
     const numText = verseEl.find('.verse-number').first().text().trim();
@@ -326,6 +334,7 @@ function parseChurchOfJesusChristHtml(
     segments,
     footnotes,
     summary,
+    intro,
     source: 'ChurchofJesusChrist.org',
   };
 }
@@ -387,6 +396,7 @@ function parseBibleComHtml(html: string): ParsedLanguageChapter {
     segments: new Map(),
     footnotes: {},
     summary: '',
+    intro: '',
     source: 'YouVersion (CUNP)',
   };
 }
@@ -442,8 +452,41 @@ async function fetchBollsCunp(
     segments: new Map(),
     footnotes: {},
     summary: '',
+    intro: '',
     source: 'CUNP (Bolls)',
   };
+}
+
+async function translateTextToTraditionalChinese(text: string): Promise<string> {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(
+      trimmed
+    )}`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!res.ok) return '';
+    const json = (await res.json()) as unknown;
+    if (!Array.isArray(json) || !Array.isArray(json[0])) return '';
+
+    const translated = (json[0] as unknown[])
+      .map((part) => (Array.isArray(part) && typeof part[0] === 'string' ? part[0] : ''))
+      .join('')
+      .replace(/上帝/g, '神')
+      .trim();
+
+    return translated;
+  } catch {
+    return '';
+  }
 }
 
 async function fetchBibleChineseCunp(
@@ -602,6 +645,20 @@ export async function getBilingualChapter({
     };
   });
 
+  let zhSummary = zhData?.summary ?? '';
+  let zhSummaryTranslated = false;
+
+  if (isBible && enData?.summary && !zhSummary) {
+    const translated = await translateTextToTraditionalChinese(enData.summary);
+    if (translated) {
+      zhSummary = translated;
+      zhSummaryTranslated = true;
+    }
+  }
+
+  const enIntro = enData?.intro ?? '';
+  const zhIntro = zhData?.intro ?? '';
+
   const payload: BilingualChapterResponse = {
     book: bookMeta.key,
     volume: bookMeta.volume,
@@ -616,8 +673,23 @@ export async function getBilingualChapter({
     },
     summary: {
       en: enData?.summary ?? '',
-      zh: zhData?.summary ?? '',
+      zh: zhSummary,
     },
+    ...(enIntro || zhIntro
+      ? {
+          intro: {
+            en: enIntro,
+            zh: zhIntro,
+          },
+        }
+      : {}),
+    ...(zhSummaryTranslated
+      ? {
+          summaryTranslated: {
+            zh: true,
+          },
+        }
+      : {}),
     verses,
     footnotes: {
       en: enData?.footnotes ?? {},

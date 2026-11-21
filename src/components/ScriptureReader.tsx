@@ -8,10 +8,14 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  Highlighter,
+  MessageSquarePlus,
   Moon,
   RefreshCw,
   Search,
+  StickyNote,
   Sun,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -24,6 +28,7 @@ import type {
   AlignedVerse,
   BilingualChapterResponse,
   DisplayMode,
+  HighlightColor,
   ScriptureApiError,
   ScriptureFootnote,
   ScriptureSearchResponse,
@@ -32,42 +37,26 @@ import type {
   ThemeMode,
   UiLang,
   VerseSegment,
+  VerseStudyAnnotation,
 } from '../types/scripture.ts';
+import {
+  createAnnotationId,
+  detectVerseSelection,
+  ensureVerseHighlightedInStorage,
+  getVersePlainText,
+  HIGHLIGHT_COLORS,
+  HIGHLIGHT_PALETTE,
+  loadChapterStudyItems,
+  saveChapterStudyItems,
+  sliceSegmentByAnnotations,
+  type DetectedVerseSelection,
+} from '../utils/studyStorage.ts';
+import VerseStudyPanel, { type StudyDraftState } from './VerseStudyPanel.tsx';
 
 const STORAGE_KEY = 'bilingual-scripture-reader-prefs-v1';
-const HIGHLIGHTS_STORAGE_KEY = 'bilingual-scripture-highlights-v1';
 const MIN_FONT_SIZE = 15;
 const MAX_FONT_SIZE = 24;
 const DEFAULT_FONT_SIZE = 18;
-
-function loadChapterHighlights(book: string, chapter: number): number[] {
-  try {
-    const raw = window.localStorage.getItem(HIGHLIGHTS_STORAGE_KEY);
-    if (!raw) return [];
-    const map = JSON.parse(raw) as Record<string, number[]>;
-    const list = map[`${book}:${chapter}`];
-    if (!Array.isArray(list)) return [];
-    return list.filter((n) => typeof n === 'number' && Number.isInteger(n) && n > 0);
-  } catch {
-    return [];
-  }
-}
-
-function saveChapterHighlights(book: string, chapter: number, verses: number[]): void {
-  try {
-    const raw = window.localStorage.getItem(HIGHLIGHTS_STORAGE_KEY);
-    const map = raw ? (JSON.parse(raw) as Record<string, number[]>) : {};
-    const key = `${book}:${chapter}`;
-    if (verses.length === 0) {
-      delete map[key];
-    } else {
-      map[key] = verses;
-    }
-    window.localStorage.setItem(HIGHLIGHTS_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // Ignore storage errors
-  }
-}
 
 interface StoredPrefs {
   book: string;
@@ -160,12 +149,28 @@ const UI_COPY = {
     copied: 'Copied',
     lightMode: 'Light',
     darkMode: 'Dark',
-    keyboardHint: 'Use ← and → keys to switch chapters · Click a verse number to highlight',
+    keyboardHint:
+      'Use ← and → keys to switch chapters · Click a verse number or select words to highlight & annotate · Press / to search',
     englishHeader: 'English',
     chineseHeader: '中文',
     highlightVerse: (n: number) => `Highlight verse ${n}`,
     unhighlightVerse: (n: number) => `Remove highlight from verse ${n}`,
+    annotateVerse: (n: number) => `Annotate or view notes for verse ${n}`,
+    annotateButton: 'Annotate',
     clearHighlights: (n: number) => `Clear highlights (${n})`,
+    chapterStudyButton: (n: number) => `Notes & Highlights (${n})`,
+    chapterStudyHeading: 'Chapter Highlights & Notes',
+    wholeVerseLabel: 'Whole verse',
+    selectedWordingLabel: 'Selected wording',
+    highlightOnlyLabel: 'Highlight only',
+    jumpToVerse: 'Go to verse',
+    editAction: 'Edit',
+    removeAction: 'Remove',
+    clearAllStudy: 'Clear all',
+    confirmClearAllStudy: 'Confirm clear all',
+    annotateSelection: 'Annotate',
+    highlightSelectionTitle: (colorName: string) => `Highlight (${colorName})`,
+    selectionNoteBadgeAria: 'View annotation for selected wording',
     searchPlaceholder: 'Search scriptures or references (e.g. "perfect knowledge", "太初有道", "Alma 32:21")',
     searchButton: 'Search',
     searchAllVolumes: 'All Volumes',
@@ -188,6 +193,7 @@ const UI_COPY = {
     returnToStudy: (ref: string) => `Return to ${ref}`,
     studyTrailLabel: 'Cross-referencing from',
     jumpToRefTitle: (ref: string) => `Jump to ${ref}`,
+    googleTranslatedLabel: '(Google Translated)',
   },
   zh: {
     brand: '雙語經文',
@@ -218,12 +224,27 @@ const UI_COPY = {
     copied: '已複製',
     lightMode: '淺色',
     darkMode: '深色',
-    keyboardHint: '可使用鍵盤 ← 與 → 鍵切換章節 · 點擊節數可標記經文 · 按 / 鍵搜尋',
+    keyboardHint: '可使用 ← 與 → 切換章節 · 點擊節數或選取字詞可畫記與寫筆記 · 按 / 搜尋',
     englishHeader: 'English',
     chineseHeader: '中文',
     highlightVerse: (n: number) => `標記第 ${n} 節`,
     unhighlightVerse: (n: number) => `取消標記第 ${n} 節`,
+    annotateVerse: (n: number) => `為第 ${n} 節加上或檢視筆記`,
+    annotateButton: '筆記',
     clearHighlights: (n: number) => `清除標記 (${n})`,
+    chapterStudyButton: (n: number) => `畫記與筆記 (${n})`,
+    chapterStudyHeading: '本章畫記與研讀筆記',
+    wholeVerseLabel: '整節經文',
+    selectedWordingLabel: '選取字詞',
+    highlightOnlyLabel: '僅畫記',
+    jumpToVerse: '前往該節',
+    editAction: '編輯',
+    removeAction: '刪除',
+    clearAllStudy: '全部清除',
+    confirmClearAllStudy: '確認全部清除',
+    annotateSelection: '加上筆記',
+    highlightSelectionTitle: (colorName: string) => `畫記 (${colorName})`,
+    selectionNoteBadgeAria: '檢視選取字詞的筆記',
     searchPlaceholder: '搜尋經文字詞、片語或章節（例如「太初有道」、「faith hope charity」、「Alma 32:21」）',
     searchButton: '搜尋',
     searchAllVolumes: '全部經典',
@@ -246,6 +267,7 @@ const UI_COPY = {
     returnToStudy: (ref: string) => `返回 ${ref}`,
     studyTrailLabel: '目前正從註腳跳轉研讀：',
     jumpToRefTitle: (ref: string) => `跳轉至 ${ref}`,
+    googleTranslatedLabel: '（Google 翻譯）',
   },
 };
 
@@ -299,13 +321,48 @@ export default function ScriptureReader() {
   const [chapterData, setChapterData] = useState<BilingualChapterResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorState, setErrorState] = useState<ScriptureApiError | null>(null);
-  const [highlightedVerses, setHighlightedVerses] = useState<number[]>(() =>
-    loadChapterHighlights(initialPrefs.book, initialPrefs.chapter)
+  const [studyItems, setStudyItems] = useState<VerseStudyAnnotation[]>(() =>
+    loadChapterStudyItems(initialPrefs.book, initialPrefs.chapter)
   );
+  const [activeHighlightColor, setActiveHighlightColor] =
+    useState<HighlightColor>('amber');
+  const [activeStudyVerse, setActiveStudyVerse] = useState<number | null>(null);
+  const [studyDraft, setStudyDraft] = useState<StudyDraftState | null>(null);
+  const [chapterNotesOpen, setChapterNotesOpen] = useState<boolean>(false);
+  const [confirmClearAll, setConfirmClearAll] = useState<boolean>(false);
+  const [selectionToolbar, setSelectionToolbar] =
+    useState<DetectedVerseSelection | null>(null);
+
   const [copiedVerse, setCopiedVerse] = useState<number | null>(null);
   const [scrollProgress, setScrollProgress] = useState<number>(0);
 
-  const highlightedSet = useMemo(() => new Set(highlightedVerses), [highlightedVerses]);
+  const { verseLevelByVerse, selectionItemsByVerseLang, studyItemsByVerse } =
+    useMemo(() => {
+      const verseMap = new Map<number, VerseStudyAnnotation>();
+      const selMap = new Map<string, VerseStudyAnnotation[]>();
+      const allByVerse = new Map<number, VerseStudyAnnotation[]>();
+
+      for (const item of studyItems) {
+        const list = allByVerse.get(item.verse) || [];
+        list.push(item);
+        allByVerse.set(item.verse, list);
+
+        if (item.scope === 'verse') {
+          verseMap.set(item.verse, item);
+        } else if (item.scope === 'selection' && item.lang) {
+          const k = `${item.verse}:${item.lang}`;
+          const arr = selMap.get(k) || [];
+          arr.push(item);
+          selMap.set(k, arr);
+        }
+      }
+
+      return {
+        verseLevelByVerse: verseMap,
+        selectionItemsByVerseLang: selMap,
+        studyItemsByVerse: allByVerse,
+      };
+    }, [studyItems]);
 
   const [searchInput, setSearchInput] = useState<string>('');
   const [searchVolume, setSearchVolume] = useState<SearchVolumeFilter>('all');
@@ -399,7 +456,11 @@ export default function ScriptureReader() {
       setLoading(true);
       setErrorState(null);
       setActiveFootnote(null);
-      setHighlightedVerses(loadChapterHighlights(targetBook, targetChapter));
+      setActiveStudyVerse(null);
+      setStudyDraft(null);
+      setSelectionToolbar(null);
+      setConfirmClearAll(false);
+      setStudyItems(loadChapterStudyItems(targetBook, targetChapter));
 
       try {
         const params = new URLSearchParams({
@@ -449,24 +510,318 @@ export default function ScriptureReader() {
     fetchChapter(currentBook.key, chapter, false);
   }, [currentBook.key, chapter, fetchChapter]);
 
-  const toggleVerseHighlight = useCallback(
-    (verseNumber: number) => {
-      setHighlightedVerses((prev) => {
-        const exists = prev.includes(verseNumber);
-        const next = exists
-          ? prev.filter((v) => v !== verseNumber)
-          : [...prev, verseNumber].sort((a, b) => a - b);
-        saveChapterHighlights(currentBook.key, chapter, next);
+  // Detect text selection inside English or Chinese verses (desktop + mobile/iPad)
+  useEffect(() => {
+    if (loading || !chapterData) return;
+
+    let timer: number | null = null;
+    const evaluateSelection = () => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'INPUT' ||
+          activeEl.closest('[data-selection-toolbar="true"]'))
+      ) {
+        return;
+      }
+      const detected = detectVerseSelection(window.getSelection());
+      setSelectionToolbar(detected);
+    };
+
+    const scheduleEval = (delayMs: number) => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(evaluateSelection, delayMs);
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if ((e.target as HTMLElement | null)?.closest('[data-selection-toolbar="true"]')) {
+        return;
+      }
+      scheduleEval(20);
+    };
+
+    const onKeyUp = () => scheduleEval(40);
+    const onSelectionChange = () => scheduleEval(180);
+
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('keyup', onKeyUp);
+    document.addEventListener('selectionchange', onSelectionChange);
+
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('selectionchange', onSelectionChange);
+    };
+  }, [loading, chapterData]);
+
+  // Dismiss floating selection toolbar if viewport scrolls significantly
+  useEffect(() => {
+    if (!selectionToolbar) return;
+    const startY = window.scrollY;
+    const onScrollDismiss = () => {
+      if (Math.abs(window.scrollY - startY) > 16) {
+        setSelectionToolbar(null);
+      }
+    };
+    window.addEventListener('scroll', onScrollDismiss, { passive: true });
+    return () => window.removeEventListener('scroll', onScrollDismiss);
+  }, [selectionToolbar]);
+
+  const updateStudyItems = useCallback(
+    (updater: (prev: VerseStudyAnnotation[]) => VerseStudyAnnotation[]) => {
+      setStudyItems((prev) => {
+        const next = updater(prev);
+        saveChapterStudyItems(currentBook.key, chapter, next);
         return next;
       });
     },
     [currentBook.key, chapter]
   );
 
-  const clearChapterHighlights = useCallback(() => {
-    setHighlightedVerses([]);
-    saveChapterHighlights(currentBook.key, chapter, []);
-  }, [currentBook.key, chapter]);
+  const toggleVerseHighlight = useCallback(
+    (verseNumber: number) => {
+      updateStudyItems((prev) => {
+        const idx = prev.findIndex(
+          (item) => item.scope === 'verse' && item.verse === verseNumber
+        );
+        const now = new Date().toISOString();
+
+        if (idx === -1) {
+          return [
+            ...prev,
+            {
+              id: createAnnotationId(),
+              scope: 'verse',
+              verse: verseNumber,
+              color: activeHighlightColor,
+              note: '',
+              createdAt: now,
+              updatedAt: now,
+            },
+          ];
+        }
+
+        const existing = prev[idx];
+        if (existing.color !== null) {
+          // If the verse has a written note, remove only the background tint so the note is preserved
+          if (existing.note.trim().length > 0) {
+            const copy = [...prev];
+            copy[idx] = { ...existing, color: null, updatedAt: now };
+            return copy;
+          }
+          return prev.filter((_, i) => i !== idx);
+        }
+
+        // Note-only verse item -> apply highlight color
+        const copy = [...prev];
+        copy[idx] = { ...existing, color: activeHighlightColor, updatedAt: now };
+        return copy;
+      });
+    },
+    [updateStudyItems, activeHighlightColor]
+  );
+
+  const clearAllChapterStudyItems = useCallback(() => {
+    updateStudyItems(() => []);
+    setConfirmClearAll(false);
+    setChapterNotesOpen(false);
+    setActiveStudyVerse(null);
+    setStudyDraft(null);
+  }, [updateStudyItems]);
+
+  const clearBrowserSelection = () => {
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {
+      // Ignore selection clear error
+    }
+    setSelectionToolbar(null);
+  };
+
+  const handleHighlightSelection = useCallback(
+    (color: HighlightColor) => {
+      if (!selectionToolbar) return;
+      const now = new Date().toISOString();
+      const newItem: VerseStudyAnnotation = {
+        id: createAnnotationId(),
+        scope: 'selection',
+        verse: selectionToolbar.verse,
+        lang: selectionToolbar.lang,
+        start: selectionToolbar.start,
+        end: selectionToolbar.end,
+        selectedText: selectionToolbar.selectedText,
+        color,
+        note: '',
+        createdAt: now,
+        updatedAt: now,
+      };
+      setActiveHighlightColor(color);
+      updateStudyItems((prev) => [...prev, newItem]);
+      clearBrowserSelection();
+    },
+    [selectionToolbar, updateStudyItems]
+  );
+
+  const handleStartAnnotateSelection = useCallback(() => {
+    if (!selectionToolbar) return;
+    const { verse, lang, start, end, selectedText } = selectionToolbar;
+    setActiveStudyVerse(verse);
+    setStudyDraft({
+      editingId: null,
+      scope: 'selection',
+      verse,
+      lang,
+      start,
+      end,
+      selectedText,
+      color: activeHighlightColor,
+      note: '',
+    });
+    clearBrowserSelection();
+  }, [selectionToolbar, activeHighlightColor]);
+
+  const handleToggleVerseStudyPanel = useCallback(
+    (verseNumber: number) => {
+      if (activeStudyVerse === verseNumber) {
+        setActiveStudyVerse(null);
+        setStudyDraft((prev) => (prev?.verse === verseNumber ? null : prev));
+        return;
+      }
+
+      setActiveStudyVerse(verseNumber);
+      const existingForVerse = studyItemsByVerse.get(verseNumber) || [];
+      if (existingForVerse.length === 0) {
+        setStudyDraft({
+          editingId: null,
+          scope: 'verse',
+          verse: verseNumber,
+          color: activeHighlightColor,
+          note: '',
+        });
+      } else {
+        setStudyDraft(null);
+      }
+    },
+    [activeStudyVerse, studyItemsByVerse, activeHighlightColor]
+  );
+
+  const handleStartNewVerseNote = useCallback(
+    (verseNumber: number) => {
+      const existingWhole = verseLevelByVerse.get(verseNumber);
+      setActiveStudyVerse(verseNumber);
+      setStudyDraft({
+        editingId: existingWhole ? existingWhole.id : null,
+        scope: 'verse',
+        verse: verseNumber,
+        color: existingWhole ? existingWhole.color : activeHighlightColor,
+        note: existingWhole ? existingWhole.note : '',
+      });
+    },
+    [verseLevelByVerse, activeHighlightColor]
+  );
+
+  const handleEditStudyItem = useCallback((item: VerseStudyAnnotation) => {
+    setActiveStudyVerse(item.verse);
+    setStudyDraft({
+      editingId: item.id,
+      scope: item.scope,
+      verse: item.verse,
+      lang: item.lang,
+      start: item.start,
+      end: item.end,
+      selectedText: item.selectedText,
+      color: item.color,
+      note: item.note,
+    });
+  }, []);
+
+  const handleSaveStudyDraft = useCallback(() => {
+    if (!studyDraft) return;
+    const trimmedNote = studyDraft.note.trim();
+    if (studyDraft.color === null && trimmedNote.length === 0) return;
+
+    const now = new Date().toISOString();
+    if (studyDraft.color) {
+      setActiveHighlightColor(studyDraft.color);
+    }
+
+    updateStudyItems((prev) => {
+      if (studyDraft.editingId) {
+        return prev.map((item) =>
+          item.id === studyDraft.editingId
+            ? {
+                ...item,
+                color: studyDraft.color,
+                note: studyDraft.note,
+                updatedAt: now,
+              }
+            : item
+        );
+      }
+
+      // If creating a whole-verse note when a whole-verse highlight already exists, merge into it
+      if (studyDraft.scope === 'verse') {
+        const existingWholeIdx = prev.findIndex(
+          (item) => item.scope === 'verse' && item.verse === studyDraft.verse
+        );
+        if (existingWholeIdx !== -1) {
+          const copy = [...prev];
+          copy[existingWholeIdx] = {
+            ...copy[existingWholeIdx],
+            color: studyDraft.color,
+            note: studyDraft.note,
+            updatedAt: now,
+          };
+          return copy;
+        }
+      }
+
+      return [
+        ...prev,
+        {
+          id: createAnnotationId(),
+          scope: studyDraft.scope,
+          verse: studyDraft.verse,
+          lang: studyDraft.lang,
+          start: studyDraft.start,
+          end: studyDraft.end,
+          selectedText: studyDraft.selectedText,
+          color: studyDraft.color,
+          note: studyDraft.note,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ];
+    });
+
+    setStudyDraft(null);
+  }, [studyDraft, updateStudyItems]);
+
+  const handleChangeItemColor = useCallback(
+    (itemId: string, color: HighlightColor | null) => {
+      if (color) setActiveHighlightColor(color);
+      updateStudyItems((prev) =>
+        prev
+          .map((item) =>
+            item.id === itemId
+              ? { ...item, color, updatedAt: new Date().toISOString() }
+              : item
+          )
+          .filter((item) => item.color !== null || item.note.trim().length > 0)
+      );
+    },
+    [updateStudyItems]
+  );
+
+  const handleDeleteStudyItem = useCallback(
+    (itemId: string) => {
+      updateStudyItems((prev) => prev.filter((item) => item.id !== itemId));
+      setStudyDraft((prev) => (prev?.editingId === itemId ? null : prev));
+    },
+    [updateStudyItems]
+  );
 
   const navigateTo = useCallback((target: { book: string; chapter: number } | null) => {
     if (!target) return;
@@ -532,14 +887,12 @@ export default function ScriptureReader() {
       setStudyHistory((prev) => [...prev, originEntry]);
 
       if (targetVerse !== null && targetVerse > 0) {
-        const existing = loadChapterHighlights(targetBook, targetChapter);
-        if (!existing.includes(targetVerse)) {
-          saveChapterHighlights(
-            targetBook,
-            targetChapter,
-            [...existing, targetVerse].sort((a, b) => a - b)
-          );
-        }
+        ensureVerseHighlightedInStorage(
+          targetBook,
+          targetChapter,
+          targetVerse,
+          activeHighlightColor
+        );
         setPendingScrollVerse(targetVerse);
       } else {
         setPendingScrollVerse(null);
@@ -549,7 +902,7 @@ export default function ScriptureReader() {
         // Jumping within the same chapter
         setActiveFootnote(null);
         if (targetVerse !== null && targetVerse > 0) {
-          setHighlightedVerses(loadChapterHighlights(targetBook, targetChapter));
+          setStudyItems(loadChapterStudyItems(targetBook, targetChapter));
           const el = document.getElementById(`v-${targetVerse}`);
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -565,7 +918,7 @@ export default function ScriptureReader() {
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     },
-    [currentBook.key, currentBook.en, currentBook.zh, chapter]
+    [currentBook.key, currentBook.en, currentBook.zh, chapter, activeHighlightColor]
   );
 
   const handleReturnToStudy = useCallback(() => {
@@ -653,28 +1006,35 @@ export default function ScriptureReader() {
   const handleOpenSearchResult = useCallback(
     (result: ScriptureSearchResult) => {
       if (result.verse !== null && result.verse > 0) {
-        const existing = loadChapterHighlights(result.book, result.chapter);
-        if (!existing.includes(result.verse)) {
-          saveChapterHighlights(
-            result.book,
-            result.chapter,
-            [...existing, result.verse].sort((a, b) => a - b)
-          );
-        }
+        ensureVerseHighlightedInStorage(
+          result.book,
+          result.chapter,
+          result.verse,
+          activeHighlightColor
+        );
         setPendingScrollVerse(result.verse);
       } else {
         setPendingScrollVerse(null);
       }
 
-      setBookKey(result.book);
-      setChapter(result.chapter);
-      setSearchPanelOpen(false);
-
-      if (result.verse === null) {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+      if (result.book === currentBook.key && result.chapter === chapter) {
+        setStudyItems(loadChapterStudyItems(result.book, result.chapter));
+        if (result.verse !== null) {
+          const el = document.getElementById(`v-${result.verse}`);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          setPendingScrollVerse(null);
+        }
+      } else {
+        setBookKey(result.book);
+        setChapter(result.chapter);
+        if (result.verse === null) {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
       }
+
+      setSearchPanelOpen(false);
     },
-    []
+    [activeHighlightColor, currentBook.key, chapter]
   );
 
   // Keyboard navigation (ArrowLeft / ArrowRight and '/' to focus search)
@@ -788,10 +1148,12 @@ export default function ScriptureReader() {
   const secondaryTitle =
     uiLang === 'zh' ? formatChapterHeading('en') : formatChapterHeading('zh');
 
-  const summaryText =
-    uiLang === 'zh'
-      ? chapterData?.summary.zh || chapterData?.summary.en
-      : chapterData?.summary.en || chapterData?.summary.zh;
+  const enIntro = chapterData?.intro?.en || '';
+  const zhIntro = chapterData?.intro?.zh || '';
+  const enSummary = chapterData?.summary.en || '';
+  const zhSummary = chapterData?.summary.zh || '';
+  const isZhSummaryTranslated = Boolean(chapterData?.summaryTranslated?.zh);
+  const hasAnyHeadingSummary = Boolean(enIntro || zhIntro || enSummary || zhSummary);
 
   return (
     <div className="min-h-screen bg-[#FAF8F4] text-stone-900 dark:bg-[#111315] dark:text-[#E7E5E0] transition-colors duration-150">
@@ -1308,16 +1670,24 @@ export default function ScriptureReader() {
               </p>
             </div>
 
-            {/* Top Chapter Prev/Next Links & Clear Highlights */}
+            {/* Top Chapter Prev/Next Links & Notes Summary Toggle */}
             <div className="flex flex-wrap items-center gap-2 shrink-0">
-              {highlightedVerses.length > 0 && (
+              {studyItems.length > 0 && (
                 <button
                   type="button"
-                  onClick={clearChapterHighlights}
-                  className="h-10 px-3 rounded-md border border-[#1E3A5F]/30 dark:border-[#7DA2D1]/35 bg-[#EFE8D8]/80 dark:bg-[#1E2530] text-xs font-medium text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#E7DEC9] dark:hover:bg-[#252E3C] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer tabular-nums"
+                  onClick={() => {
+                    setChapterNotesOpen((prev) => !prev);
+                    setConfirmClearAll(false);
+                  }}
+                  aria-expanded={chapterNotesOpen}
+                  className={`h-10 px-3 rounded-md border text-xs font-medium inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer tabular-nums ${
+                    chapterNotesOpen
+                      ? 'border-[#1E3A5F] dark:border-[#7DA2D1] bg-[#1E3A5F] dark:bg-[#7DA2D1] text-white dark:text-[#111315]'
+                      : 'border-[#1E3A5F]/30 dark:border-[#7DA2D1]/35 bg-[#EFE8D8]/80 dark:bg-[#1E2530] text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#E7DEC9] dark:hover:bg-[#252E3C]'
+                  }`}
                 >
-                  <X className="w-3.5 h-3.5" />
-                  <span>{t.clearHighlights(highlightedVerses.length)}</span>
+                  <StickyNote className="w-3.5 h-3.5" />
+                  <span>{t.chapterStudyButton(studyItems.length)}</span>
                 </button>
               )}
               <button
@@ -1341,13 +1711,243 @@ export default function ScriptureReader() {
             </div>
           </div>
 
-          {/* Optional Chapter Summary */}
-          {summaryText && !loading && (
-            <p className="mt-5 pt-4 border-t border-stone-200/70 dark:border-stone-800/80 font-['Source_Serif_4','Noto_Serif_TC',serif] text-sm sm:text-base italic text-stone-600 dark:text-stone-400 leading-relaxed max-w-4xl">
-              {summaryText}
-            </p>
-          )}
+          {/* Bilingual Chapter Heading Summary & Section Intro */}
+          {hasAnyHeadingSummary &&
+            !loading &&
+            (() => {
+              const hasEnBlock = Boolean(enIntro || enSummary);
+              const hasZhBlock = Boolean(zhIntro || zhSummary);
+
+              const enHeadingBlock = hasEnBlock ? (
+                <div key="en-summary" className="space-y-1.5 min-w-0">
+                  {enIntro && (
+                    <p className="font-['Source_Serif_4',Georgia,serif] text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                      {enIntro}
+                    </p>
+                  )}
+                  {enSummary && (
+                    <p className="font-['Source_Serif_4',Georgia,serif] text-sm sm:text-base italic text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                      {enSummary}
+                    </p>
+                  )}
+                </div>
+              ) : null;
+
+              const zhHeadingBlock = hasZhBlock ? (
+                <div key="zh-summary" className="space-y-1.5 min-w-0">
+                  {zhIntro && (
+                    <p className="font-['Noto_Serif_TC','Source_Serif_4',serif] text-xs sm:text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
+                      {zhIntro}
+                    </p>
+                  )}
+                  {zhSummary && (
+                    <p className="font-['Noto_Serif_TC','Source_Serif_4',serif] text-sm sm:text-base text-neutral-800 dark:text-neutral-200 leading-relaxed">
+                      <span>{zhSummary}</span>
+                      {isZhSummaryTranslated && (
+                        <span className="ml-1.5 font-['Plus_Jakarta_Sans',sans-serif] not-italic text-xs text-stone-500 dark:text-stone-400">
+                          {t.googleTranslatedLabel}
+                        </span>
+                      )}
+                    </p>
+                  )}
+                </div>
+              ) : null;
+
+              return (
+                <div className="mt-5 pt-4 border-t border-stone-200/70 dark:border-stone-800/80">
+                  {displayMode === 'parallel' && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
+                      {enHeadingBlock ?? <div className="hidden md:block" />}
+                      {zhHeadingBlock}
+                    </div>
+                  )}
+
+                  {displayMode === 'interleaved' && (
+                    <div className="space-y-2.5 max-w-4xl">
+                      {uiLang === 'zh'
+                        ? [zhHeadingBlock, enHeadingBlock]
+                        : [enHeadingBlock, zhHeadingBlock]}
+                    </div>
+                  )}
+
+                  {displayMode === 'en-only' && (
+                    <div className="max-w-4xl">
+                      {enHeadingBlock || zhHeadingBlock}
+                    </div>
+                  )}
+
+                  {displayMode === 'zh-only' && (
+                    <div className="max-w-4xl">
+                      {zhHeadingBlock || enHeadingBlock}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
         </header>
+
+        {/* Chapter Highlights & Notes Drawer */}
+        {chapterNotesOpen && studyItems.length > 0 && (
+          <section
+            aria-label={t.chapterStudyHeading}
+            className="mb-8 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-[#181A1E] p-4 sm:p-5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-stone-200 dark:border-stone-800">
+              <h2 className="font-['Cormorant_Garamond','Noto_Serif_TC',serif] text-xl sm:text-2xl font-semibold text-stone-900 dark:text-stone-100">
+                {t.chapterStudyHeading}
+              </h2>
+
+              <div className="flex items-center gap-2">
+                {!confirmClearAll ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearAll(true)}
+                    className="h-8 px-2.5 rounded border border-stone-300 dark:border-stone-700 text-xs text-stone-600 dark:text-stone-300 hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{t.clearAllStudy}</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={clearAllChapterStudyItems}
+                      className="h-8 px-2.5 rounded bg-rose-700 text-white text-xs font-medium hover:bg-rose-800 whitespace-nowrap cursor-pointer"
+                    >
+                      {t.confirmClearAllStudy}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearAll(false)}
+                      className="h-8 px-2.5 rounded border border-stone-300 dark:border-stone-700 text-xs text-stone-600 dark:text-stone-300 whitespace-nowrap cursor-pointer"
+                    >
+                      {t.closeSearch}
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setChapterNotesOpen(false)}
+                  className="h-8 px-2.5 rounded border border-stone-300 dark:border-stone-700 text-xs text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>{t.closeSearch}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="divide-y divide-stone-200/80 dark:divide-stone-800 mt-1">
+              {[...studyItems]
+                .sort((a, b) => {
+                  if (a.verse !== b.verse) return a.verse - b.verse;
+                  if (a.scope !== b.scope) return a.scope === 'verse' ? -1 : 1;
+                  return (a.start ?? 0) - (b.start ?? 0);
+                })
+                .map((item) => {
+                  const colorMeta = item.color ? HIGHLIGHT_PALETTE[item.color] : null;
+                  const refLabel =
+                    uiLang === 'zh'
+                      ? `${currentBook.zh} ${chapter}:${item.verse}`
+                      : `${currentBook.en} ${chapter}:${item.verse}`;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="py-3 first:pt-3 last:pb-1 flex flex-col sm:flex-row sm:items-start justify-between gap-2.5"
+                    >
+                      <div className="space-y-1 min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
+                          <span className="font-semibold text-[#1E3A5F] dark:text-[#7DA2D1] tabular-nums">
+                            {refLabel}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>
+                            {item.scope === 'verse'
+                              ? t.wholeVerseLabel
+                              : `${t.selectedWordingLabel} (${
+                                  item.lang === 'zh' ? t.chineseHeader : t.englishHeader
+                                })`}
+                          </span>
+                          {colorMeta && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="inline-flex items-center gap-1 text-stone-700 dark:text-stone-300">
+                                <span
+                                  aria-hidden="true"
+                                  className={`w-2.5 h-2.5 rounded-xs border ${colorMeta.swatchClass}`}
+                                />
+                                <span>
+                                  {uiLang === 'zh'
+                                    ? colorMeta.labelZh
+                                    : colorMeta.labelEn}
+                                </span>
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        {item.scope === 'selection' && item.selectedText && (
+                          <p
+                            className={`text-xs sm:text-sm italic px-2 py-0.5 rounded inline-block max-w-full ${
+                              colorMeta
+                                ? colorMeta.inlineMarkClass
+                                : 'bg-stone-200/70 dark:bg-stone-800/80'
+                            } text-stone-800 dark:text-stone-200`}
+                          >
+                            “{item.selectedText}”
+                          </p>
+                        )}
+
+                        {item.note.trim() ? (
+                          <p className="text-sm text-stone-800 dark:text-stone-200 whitespace-pre-wrap leading-relaxed">
+                            {item.note}
+                          </p>
+                        ) : (
+                          <p className="text-xs italic text-stone-400 dark:text-stone-500">
+                            {t.highlightOnlyLabel}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveStudyVerse(item.verse);
+                            setStudyDraft(null);
+                            const el = document.getElementById(`v-${item.verse}`);
+                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          }}
+                          className="h-8 px-2.5 rounded border border-stone-300 dark:border-stone-700 text-xs font-medium text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-stone-100 dark:hover:bg-stone-800 whitespace-nowrap cursor-pointer"
+                        >
+                          {t.jumpToVerse}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleEditStudyItem(item);
+                            const el = document.getElementById(`v-${item.verse}`);
+                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          }}
+                          className="h-8 px-2.5 rounded border border-stone-300 dark:border-stone-700 text-xs text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 whitespace-nowrap cursor-pointer"
+                        >
+                          {t.editAction}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteStudyItem(item.id)}
+                          className="h-8 px-2 rounded text-xs text-stone-500 dark:text-stone-400 hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 whitespace-nowrap cursor-pointer"
+                        >
+                          {t.removeAction}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </section>
+        )}
 
         {/* Active Study Return Banner (when jumped from a footnote cross-reference) */}
         {studyHistory.length > 0 && (
@@ -1462,23 +2062,132 @@ export default function ScriptureReader() {
         {!loading && !errorState && chapterData && (
           <article aria-label={primaryTitle}>
             {(() => {
+              const renderAnnotatedTextSlices = (
+                segStart: number,
+                segEnd: number,
+                fullText: string,
+                selectionAnns: VerseStudyAnnotation[],
+                extraClassName?: string
+              ): React.ReactNode => {
+                const slices = sliceSegmentByAnnotations(
+                  segStart,
+                  segEnd,
+                  fullText,
+                  selectionAnns
+                );
+
+                return slices.map((slice, sIdx) => {
+                  const primary = slice.primaryAnnotation;
+                  const colorMeta = primary?.color
+                    ? HIGHLIGHT_PALETTE[primary.color]
+                    : null;
+                  const hasNoteOnlyUnderline =
+                    Boolean(primary) && !primary?.color && Boolean(primary?.note.trim());
+
+                  const sliceClasses = [
+                    extraClassName,
+                    colorMeta ? colorMeta.inlineMarkClass : '',
+                    hasNoteOnlyUnderline
+                      ? 'underline decoration-dotted decoration-[#1E3A5F]/75 dark:decoration-[#7DA2D1]/80 underline-offset-4'
+                      : '',
+                    primary ? 'cursor-pointer transition-colors' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ');
+
+                  const handleAnnotatedSliceClick = primary
+                    ? (e: React.MouseEvent) => {
+                        const sel = window.getSelection();
+                        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+                          return;
+                        }
+                        e.stopPropagation();
+                        handleEditStudyItem(primary);
+                      }
+                    : undefined;
+
+                  return (
+                    <React.Fragment key={`${slice.start}-${slice.end}-${sIdx}`}>
+                      {primary ? (
+                        <mark
+                          onClick={handleAnnotatedSliceClick}
+                          title={primary.note.trim() ? primary.note : undefined}
+                          className={`${sliceClasses} ${
+                            !colorMeta ? 'bg-transparent text-inherit' : ''
+                          }`}
+                        >
+                          {slice.text}
+                        </mark>
+                      ) : extraClassName ? (
+                        <span className={extraClassName}>{slice.text}</span>
+                      ) : (
+                        <>{slice.text}</>
+                      )}
+
+                      {slice.endingNotes.map((noteAnn) => (
+                        <button
+                          key={`badge-${noteAnn.id}`}
+                          type="button"
+                          data-annotation-badge="true"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditStudyItem(noteAnn);
+                          }}
+                          aria-label={t.selectionNoteBadgeAria}
+                          title={noteAnn.note}
+                          className="select-none inline-flex items-center justify-center align-super text-[0.68em] leading-none px-1 py-0.5 ml-0.5 rounded-xs border border-[#1E3A5F]/35 dark:border-[#7DA2D1]/45 bg-[#EFE8D8] dark:bg-[#1E2530] text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F] hover:text-white dark:hover:bg-[#7DA2D1] dark:hover:text-[#111315] transition-colors cursor-pointer"
+                        >
+                          <StickyNote className="w-2.5 h-2.5" />
+                        </button>
+                      ))}
+                    </React.Fragment>
+                  );
+                });
+              };
+
               const renderVerseSegments = (
                 segments: VerseSegment[] | undefined,
                 fallbackText: string,
                 lang: 'en' | 'zh',
                 verseNum: number
               ): React.ReactNode => {
+                const selectionAnns =
+                  selectionItemsByVerseLang.get(`${verseNum}:${lang}`) || [];
+                const fullText = getVersePlainText(segments, fallbackText);
+
                 if (!segments || segments.length === 0) {
-                  return fallbackText || (
-                    <span className="text-sm italic text-stone-400 dark:text-stone-500">
-                      —
-                    </span>
+                  if (!fullText) {
+                    return (
+                      <span className="text-sm italic text-stone-400 dark:text-stone-500">
+                        —
+                      </span>
+                    );
+                  }
+                  return renderAnnotatedTextSlices(
+                    0,
+                    fullText.length,
+                    fullText,
+                    selectionAnns
                   );
                 }
 
+                let cursor = 0;
                 return segments.map((seg, idx) => {
+                  const segStart = cursor;
+                  const segEnd = cursor + seg.text.length;
+                  cursor = segEnd;
+
                   if (seg.type === 'text') {
-                    return <React.Fragment key={idx}>{seg.text}</React.Fragment>;
+                    return (
+                      <React.Fragment key={idx}>
+                        {renderAnnotatedTextSlices(
+                          segStart,
+                          segEnd,
+                          fullText,
+                          selectionAnns
+                        )}
+                      </React.Fragment>
+                    );
                   }
 
                   const noteId = seg.noteId;
@@ -1490,17 +2199,27 @@ export default function ScriptureReader() {
                     activeFootnote?.noteId === noteId;
 
                   if (!noteId || !marker) {
-                    return <React.Fragment key={idx}>{seg.text}</React.Fragment>;
+                    return (
+                      <React.Fragment key={idx}>
+                        {renderAnnotatedTextSlices(
+                          segStart,
+                          segEnd,
+                          fullText,
+                          selectionAnns
+                        )}
+                      </React.Fragment>
+                    );
                   }
 
                   return (
                     <React.Fragment key={`${noteId}-${idx}`}>
                       <button
                         type="button"
+                        data-footnote-marker="true"
                         onClick={() => handleFootnoteClick(verseNum, lang, noteId)}
                         aria-expanded={isActive}
                         aria-label={t.footnoteOpenAria(marker, seg.text)}
-                        className={`inline-flex items-center justify-center align-super text-[0.7em] font-['Plus_Jakarta_Sans',sans-serif] font-semibold leading-none px-1 py-0.5 mr-0.5 rounded-xs transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
+                        className={`select-none inline-flex items-center justify-center align-super text-[0.7em] font-['Plus_Jakarta_Sans',sans-serif] font-semibold leading-none px-1 py-0.5 mr-0.5 rounded-xs transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
                           isActive
                             ? 'bg-[#1E3A5F] text-white dark:bg-[#7DA2D1] dark:text-[#111315]'
                             : 'text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F]/12 dark:hover:bg-[#7DA2D1]/20'
@@ -1508,15 +2227,15 @@ export default function ScriptureReader() {
                       >
                         {marker}
                       </button>
-                      <span
-                        className={
-                          isActive
-                            ? 'underline decoration-[#1E3A5F]/55 dark:decoration-[#7DA2D1]/60 underline-offset-4'
-                            : undefined
-                        }
-                      >
-                        {seg.text}
-                      </span>
+                      {renderAnnotatedTextSlices(
+                        segStart,
+                        segEnd,
+                        fullText,
+                        selectionAnns,
+                        isActive
+                          ? 'underline decoration-[#1E3A5F]/55 dark:decoration-[#7DA2D1]/60 underline-offset-4'
+                          : undefined
+                      )}
                     </React.Fragment>
                   );
                 });
@@ -1653,13 +2372,55 @@ export default function ScriptureReader() {
                 );
               };
 
+              const renderVerseStudyPanel = (verseNumber: number) => {
+                if (activeStudyVerse !== verseNumber) return null;
+                return (
+                  <VerseStudyPanel
+                    verse={verseNumber}
+                    uiLang={uiLang}
+                    items={studyItemsByVerse.get(verseNumber) || []}
+                    draft={studyDraft}
+                    onChangeDraft={setStudyDraft}
+                    onSaveDraft={handleSaveStudyDraft}
+                    onCancelDraft={() => setStudyDraft(null)}
+                    onStartNewVerseNote={handleStartNewVerseNote}
+                    onEditItem={handleEditStudyItem}
+                    onChangeItemColor={handleChangeItemColor}
+                    onDeleteItem={handleDeleteStudyItem}
+                    onClosePanel={() => {
+                      setActiveStudyVerse(null);
+                      setStudyDraft(null);
+                    }}
+                  />
+                );
+              };
+
+              const getVerseVisualMeta = (verseNum: number) => {
+                const wholeItem = verseLevelByVerse.get(verseNum);
+                const wholeColor = wholeItem?.color ?? null;
+                const isHighlighted = wholeColor !== null;
+                const colorConfig = wholeColor ? HIGHLIGHT_PALETTE[wholeColor] : null;
+                const verseItems = studyItemsByVerse.get(verseNum) || [];
+                const noteCount = verseItems.filter(
+                  (item) => item.note.trim().length > 0
+                ).length;
+                const hasAnyStudy = verseItems.length > 0;
+                return {
+                  isHighlighted,
+                  colorConfig,
+                  verseItems,
+                  noteCount,
+                  hasAnyStudy,
+                };
+              };
+
               return (
                 <>
                   {/* Parallel Mode (Side-by-side on md+, stacked on narrow) */}
                   {displayMode === 'parallel' && (
                     <div>
                       {/* Desktop Column Headers */}
-                      <div className="hidden md:grid md:grid-cols-[3.25rem_1fr_1fr] gap-8 pb-3 mb-2 border-b border-stone-200 dark:border-stone-800 text-xs font-medium">
+                      <div className="hidden md:grid md:grid-cols-[3.5rem_1fr_1fr] gap-8 pb-3 mb-2 border-b border-stone-200 dark:border-stone-800 text-xs font-medium">
                         <span aria-hidden="true" />
                         <span className="text-neutral-600 dark:text-neutral-400">
                           {t.englishHeader}
@@ -1671,20 +2432,29 @@ export default function ScriptureReader() {
 
                       <div className="divide-y divide-stone-200/75 dark:divide-stone-800/75">
                         {chapterData.verses.map((v) => {
-                          const isHighlighted = highlightedSet.has(v.verse);
+                          const {
+                            isHighlighted,
+                            colorConfig,
+                            noteCount,
+                            hasAnyStudy,
+                          } = getVerseVisualMeta(v.verse);
                           const hasOpenFootnote = activeFootnote?.verse === v.verse;
+                          const hasOpenStudy = activeStudyVerse === v.verse;
+                          const enPlain = getVersePlainText(v.enSegments, v.en);
+                          const zhPlain = getVersePlainText(v.zhSegments, v.zh);
+
                           return (
                             <div
                               key={v.verse}
                               id={`v-${v.verse}`}
-                              className={`py-4 px-3 -mx-3 rounded-md transition-colors ${
-                                isHighlighted
-                                  ? 'bg-[#EFE8D8]/85 dark:bg-[#1E2530] ring-1 ring-[#1E3A5F]/25 dark:ring-[#7DA2D1]/30'
+                              className={`group py-4 px-3 -mx-3 rounded-md transition-colors ${
+                                colorConfig
+                                  ? colorConfig.verseContainerClass
                                   : 'hover:bg-stone-200/35 dark:hover:bg-stone-800/30'
                               }`}
                             >
-                              <div className="grid grid-cols-1 md:grid-cols-[3.25rem_1fr_1fr] gap-3 md:gap-8">
-                                <div className="flex items-center justify-between md:block">
+                              <div className="grid grid-cols-1 md:grid-cols-[3.5rem_1fr_1fr] gap-3 md:gap-8">
+                                <div className="flex items-center justify-between md:flex-col md:items-start md:justify-start md:gap-1.5">
                                   <button
                                     type="button"
                                     onClick={() => toggleVerseHighlight(v.verse)}
@@ -1700,35 +2470,64 @@ export default function ScriptureReader() {
                                         : t.highlightVerse(v.verse)
                                     }
                                     className={`inline-flex items-center justify-center min-w-[2.25rem] h-8 px-2 rounded text-sm font-semibold tabular-nums transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
-                                      isHighlighted
-                                        ? 'bg-[#1E3A5F] text-white dark:bg-[#7DA2D1] dark:text-[#111315]'
+                                      colorConfig
+                                        ? colorConfig.verseNumberActiveClass
                                         : 'text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F]/12 dark:hover:bg-[#7DA2D1]/18'
                                     }`}
                                   >
                                     {v.verse}
                                   </button>
-                                  {isHighlighted && (
+
+                                  <div className="flex items-center gap-1.5">
                                     <button
                                       type="button"
-                                      onClick={() => handleCopyVerse(v)}
-                                      className="md:hidden inline-flex items-center gap-1 text-xs font-medium text-[#1E3A5F] dark:text-[#7DA2D1] px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-[#111315] cursor-pointer"
+                                      onClick={() => handleToggleVerseStudyPanel(v.verse)}
+                                      aria-expanded={hasOpenStudy}
+                                      aria-label={t.annotateVerse(v.verse)}
+                                      title={t.annotateVerse(v.verse)}
+                                      className={`inline-flex items-center justify-center gap-1 h-7 px-2 rounded text-xs transition-all cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
+                                        hasOpenStudy || noteCount > 0 || hasAnyStudy
+                                          ? 'text-[#1E3A5F] dark:text-[#7DA2D1] bg-white/80 dark:bg-[#111315]/80 border border-stone-300/80 dark:border-stone-700 opacity-100'
+                                          : 'text-stone-500 dark:text-stone-400 hover:text-[#1E3A5F] dark:hover:text-[#7DA2D1] hover:bg-stone-200/60 dark:hover:bg-stone-800 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100'
+                                      }`}
                                     >
-                                      {copiedVerse === v.verse ? (
+                                      {noteCount > 0 ? (
                                         <>
-                                          <Check className="w-3.5 h-3.5" />
-                                          <span>{t.copied}</span>
+                                          <StickyNote className="w-3.5 h-3.5" />
+                                          <span>{noteCount}</span>
                                         </>
                                       ) : (
-                                        <>
-                                          <Copy className="w-3.5 h-3.5" />
-                                          <span>{t.copyVerse}</span>
-                                        </>
+                                        <MessageSquarePlus className="w-3.5 h-3.5" />
                                       )}
                                     </button>
-                                  )}
+
+                                    {isHighlighted && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCopyVerse(v)}
+                                        className="md:hidden inline-flex items-center gap-1 text-xs font-medium text-[#1E3A5F] dark:text-[#7DA2D1] px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-[#111315] cursor-pointer"
+                                      >
+                                        {copiedVerse === v.verse ? (
+                                          <>
+                                            <Check className="w-3.5 h-3.5" />
+                                            <span>{t.copied}</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Copy className="w-3.5 h-3.5" />
+                                            <span>{t.copyVerse}</span>
+                                          </>
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
 
                                 <p
+                                  data-verse-text="true"
+                                  data-verse={v.verse}
+                                  data-lang="en"
+                                  data-full-text={enPlain}
                                   className={`font-['Source_Serif_4',Georgia,serif] dark:tracking-[0.01em] ${
                                     isHighlighted
                                       ? 'text-neutral-700 dark:text-neutral-300'
@@ -1741,13 +2540,17 @@ export default function ScriptureReader() {
 
                                 <div className="flex flex-col justify-between gap-2">
                                   <p
+                                    data-verse-text="true"
+                                    data-verse={v.verse}
+                                    data-lang="zh"
+                                    data-full-text={zhPlain}
                                     className="font-['Noto_Serif_TC','Source_Serif_4',serif] text-neutral-900 dark:text-neutral-100 dark:tracking-[0.015em]"
                                     style={zhFontStyle}
                                   >
                                     {renderVerseSegments(v.zhSegments, v.zh, 'zh', v.verse)}
                                   </p>
                                   {isHighlighted && (
-                                    <div className="hidden md:flex justify-end">
+                                    <div className="hidden md:flex justify-end gap-1.5">
                                       <button
                                         type="button"
                                         onClick={() => handleCopyVerse(v)}
@@ -1770,9 +2573,10 @@ export default function ScriptureReader() {
                                 </div>
                               </div>
 
-                              {hasOpenFootnote && (
-                                <div className="md:pl-[5.25rem]">
-                                  {renderFootnotePanel(v)}
+                              {(hasOpenFootnote || hasOpenStudy) && (
+                                <div className="md:pl-[5.5rem]">
+                                  {hasOpenFootnote && renderFootnotePanel(v)}
+                                  {renderVerseStudyPanel(v.verse)}
                                 </div>
                               )}
                             </div>
@@ -1786,12 +2590,24 @@ export default function ScriptureReader() {
                   {displayMode === 'interleaved' && (
                     <div className="max-w-3xl mx-auto divide-y divide-stone-200/75 dark:divide-stone-800/75">
                       {chapterData.verses.map((v) => {
-                        const isHighlighted = highlightedSet.has(v.verse);
+                        const {
+                          isHighlighted,
+                          colorConfig,
+                          noteCount,
+                          hasAnyStudy,
+                        } = getVerseVisualMeta(v.verse);
+                        const hasOpenStudy = activeStudyVerse === v.verse;
                         const zhFirst = uiLang === 'zh';
+                        const enPlain = getVersePlainText(v.enSegments, v.en);
+                        const zhPlain = getVersePlainText(v.zhSegments, v.zh);
 
                         const enBlock = (
                           <p
                             key="en"
+                            data-verse-text="true"
+                            data-verse={v.verse}
+                            data-lang="en"
+                            data-full-text={enPlain}
                             className={`font-['Source_Serif_4',Georgia,serif] dark:tracking-[0.01em] ${
                               isHighlighted
                                 ? 'text-neutral-700 dark:text-neutral-300'
@@ -1806,6 +2622,10 @@ export default function ScriptureReader() {
                         const zhBlock = (
                           <p
                             key="zh"
+                            data-verse-text="true"
+                            data-verse={v.verse}
+                            data-lang="zh"
+                            data-full-text={zhPlain}
                             className="font-['Noto_Serif_TC','Source_Serif_4',serif] text-neutral-900 dark:text-neutral-100 dark:tracking-[0.015em]"
                             style={zhFontStyle}
                           >
@@ -1817,38 +2637,63 @@ export default function ScriptureReader() {
                           <div
                             key={v.verse}
                             id={`v-${v.verse}`}
-                            className={`py-5 px-3.5 -mx-3.5 rounded-md transition-colors ${
-                              isHighlighted
-                                ? 'bg-[#EFE8D8]/85 dark:bg-[#1E2530] ring-1 ring-[#1E3A5F]/25 dark:ring-[#7DA2D1]/30'
+                            className={`group py-5 px-3.5 -mx-3.5 rounded-md transition-colors ${
+                              colorConfig
+                                ? colorConfig.verseContainerClass
                                 : 'hover:bg-stone-200/35 dark:hover:bg-stone-800/30'
                             }`}
                           >
                             <div className="flex items-start gap-4">
-                              <button
-                                type="button"
-                                onClick={() => toggleVerseHighlight(v.verse)}
-                                aria-pressed={isHighlighted}
-                                aria-label={
-                                  isHighlighted
-                                    ? t.unhighlightVerse(v.verse)
-                                    : t.highlightVerse(v.verse)
-                                }
-                                title={
-                                  isHighlighted
-                                    ? t.unhighlightVerse(v.verse)
-                                    : t.highlightVerse(v.verse)
-                                }
-                                className={`inline-flex items-center justify-center min-w-[2.25rem] h-8 px-2 rounded text-sm font-semibold tabular-nums shrink-0 mt-0.5 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
-                                  isHighlighted
-                                    ? 'bg-[#1E3A5F] text-white dark:bg-[#7DA2D1] dark:text-[#111315]'
-                                    : 'text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F]/12 dark:hover:bg-[#7DA2D1]/18'
-                                }`}
-                              >
-                                {v.verse}
-                              </button>
+                              <div className="flex flex-col items-center gap-1.5 shrink-0 mt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleVerseHighlight(v.verse)}
+                                  aria-pressed={isHighlighted}
+                                  aria-label={
+                                    isHighlighted
+                                      ? t.unhighlightVerse(v.verse)
+                                      : t.highlightVerse(v.verse)
+                                  }
+                                  title={
+                                    isHighlighted
+                                      ? t.unhighlightVerse(v.verse)
+                                      : t.highlightVerse(v.verse)
+                                  }
+                                  className={`inline-flex items-center justify-center min-w-[2.25rem] h-8 px-2 rounded text-sm font-semibold tabular-nums transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
+                                    colorConfig
+                                      ? colorConfig.verseNumberActiveClass
+                                      : 'text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F]/12 dark:hover:bg-[#7DA2D1]/18'
+                                  }`}
+                                >
+                                  {v.verse}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleVerseStudyPanel(v.verse)}
+                                  aria-expanded={hasOpenStudy}
+                                  aria-label={t.annotateVerse(v.verse)}
+                                  title={t.annotateVerse(v.verse)}
+                                  className={`inline-flex items-center justify-center gap-1 h-7 px-2 rounded text-xs transition-all cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
+                                    hasOpenStudy || noteCount > 0 || hasAnyStudy
+                                      ? 'text-[#1E3A5F] dark:text-[#7DA2D1] bg-white/80 dark:bg-[#111315]/80 border border-stone-300/80 dark:border-stone-700 opacity-100'
+                                      : 'text-stone-500 dark:text-stone-400 hover:text-[#1E3A5F] dark:hover:text-[#7DA2D1] hover:bg-stone-200/60 dark:hover:bg-stone-800 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100'
+                                  }`}
+                                >
+                                  {noteCount > 0 ? (
+                                    <>
+                                      <StickyNote className="w-3.5 h-3.5" />
+                                      <span>{noteCount}</span>
+                                    </>
+                                  ) : (
+                                    <MessageSquarePlus className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
                               <div className="space-y-2.5 flex-1 min-w-0">
                                 {zhFirst ? [zhBlock, enBlock] : [enBlock, zhBlock]}
                                 {renderFootnotePanel(v)}
+                                {renderVerseStudyPanel(v.verse)}
                                 {isHighlighted && (
                                   <div className="pt-1 flex justify-end">
                                     <button
@@ -1882,43 +2727,81 @@ export default function ScriptureReader() {
                   {(displayMode === 'en-only' || displayMode === 'zh-only') && (
                     <div className="max-w-2xl mx-auto space-y-3">
                       {chapterData.verses.map((v) => {
-                        const isHighlighted = highlightedSet.has(v.verse);
+                        const {
+                          isHighlighted,
+                          colorConfig,
+                          noteCount,
+                          hasAnyStudy,
+                        } = getVerseVisualMeta(v.verse);
+                        const hasOpenStudy = activeStudyVerse === v.verse;
                         const isEn = displayMode === 'en-only';
+                        const plainText = isEn
+                          ? getVersePlainText(v.enSegments, v.en)
+                          : getVersePlainText(v.zhSegments, v.zh);
+
                         return (
                           <div
                             key={v.verse}
                             id={`v-${v.verse}`}
-                            className={`py-3 px-3.5 -mx-3.5 rounded-md transition-colors ${
-                              isHighlighted
-                                ? 'bg-[#EFE8D8]/85 dark:bg-[#1E2530] ring-1 ring-[#1E3A5F]/25 dark:ring-[#7DA2D1]/30'
+                            className={`group py-3 px-3.5 -mx-3.5 rounded-md transition-colors ${
+                              colorConfig
+                                ? colorConfig.verseContainerClass
                                 : 'hover:bg-stone-200/35 dark:hover:bg-stone-800/30'
                             }`}
                           >
                             <div className="flex items-start gap-3">
-                              <button
-                                type="button"
-                                onClick={() => toggleVerseHighlight(v.verse)}
-                                aria-pressed={isHighlighted}
-                                aria-label={
-                                  isHighlighted
-                                    ? t.unhighlightVerse(v.verse)
-                                    : t.highlightVerse(v.verse)
-                                }
-                                title={
-                                  isHighlighted
-                                    ? t.unhighlightVerse(v.verse)
-                                    : t.highlightVerse(v.verse)
-                                }
-                                className={`inline-flex items-center justify-center min-w-[2rem] h-7 px-1.5 rounded text-xs font-semibold tabular-nums shrink-0 mt-1 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
-                                  isHighlighted
-                                    ? 'bg-[#1E3A5F] text-white dark:bg-[#7DA2D1] dark:text-[#111315]'
-                                    : 'text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F]/12 dark:hover:bg-[#7DA2D1]/18'
-                                }`}
-                              >
-                                {v.verse}
-                              </button>
+                              <div className="flex flex-col items-center gap-1 shrink-0 mt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleVerseHighlight(v.verse)}
+                                  aria-pressed={isHighlighted}
+                                  aria-label={
+                                    isHighlighted
+                                      ? t.unhighlightVerse(v.verse)
+                                      : t.highlightVerse(v.verse)
+                                  }
+                                  title={
+                                    isHighlighted
+                                      ? t.unhighlightVerse(v.verse)
+                                      : t.highlightVerse(v.verse)
+                                  }
+                                  className={`inline-flex items-center justify-center min-w-[2rem] h-7 px-1.5 rounded text-xs font-semibold tabular-nums transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
+                                    colorConfig
+                                      ? colorConfig.verseNumberActiveClass
+                                      : 'text-[#1E3A5F] dark:text-[#7DA2D1] hover:bg-[#1E3A5F]/12 dark:hover:bg-[#7DA2D1]/18'
+                                  }`}
+                                >
+                                  {v.verse}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleVerseStudyPanel(v.verse)}
+                                  aria-expanded={hasOpenStudy}
+                                  aria-label={t.annotateVerse(v.verse)}
+                                  title={t.annotateVerse(v.verse)}
+                                  className={`inline-flex items-center justify-center gap-0.5 h-6 px-1.5 rounded text-[11px] transition-all cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-[#1E3A5F] dark:focus-visible:outline-[#7DA2D1] ${
+                                    hasOpenStudy || noteCount > 0 || hasAnyStudy
+                                      ? 'text-[#1E3A5F] dark:text-[#7DA2D1] bg-white/80 dark:bg-[#111315]/80 border border-stone-300/80 dark:border-stone-700 opacity-100'
+                                      : 'text-stone-500 dark:text-stone-400 hover:text-[#1E3A5F] dark:hover:text-[#7DA2D1] hover:bg-stone-200/60 dark:hover:bg-stone-800 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100'
+                                  }`}
+                                >
+                                  {noteCount > 0 ? (
+                                    <>
+                                      <StickyNote className="w-3 h-3" />
+                                      <span>{noteCount}</span>
+                                    </>
+                                  ) : (
+                                    <MessageSquarePlus className="w-3 h-3" />
+                                  )}
+                                </button>
+                              </div>
                               <div className="flex-1 min-w-0">
                                 <p
+                                  data-verse-text="true"
+                                  data-verse={v.verse}
+                                  data-lang={isEn ? 'en' : 'zh'}
+                                  data-full-text={plainText}
                                   className={
                                     isEn
                                       ? `font-['Source_Serif_4',Georgia,serif] dark:tracking-[0.01em] ${
@@ -1935,6 +2818,7 @@ export default function ScriptureReader() {
                                     : renderVerseSegments(v.zhSegments, v.zh, 'zh', v.verse)}
                                 </p>
                                 {renderFootnotePanel(v)}
+                                {renderVerseStudyPanel(v.verse)}
                                 {isHighlighted && (
                                   <div className="mt-2 flex justify-end">
                                     <button
@@ -2044,6 +2928,84 @@ export default function ScriptureReader() {
           </span>
         </button>
       )}
+
+      {/* Floating Selection Action Toolbar (Highlight / Annotate Selected Wording) */}
+      {selectionToolbar &&
+        (() => {
+          const rect = selectionToolbar.rect;
+          const isNarrowViewport =
+            typeof window !== 'undefined' && window.innerWidth < 768;
+          const placeBelow = isNarrowViewport || rect.top < 120;
+          const rawTop = placeBelow ? rect.bottom + 10 : rect.top - 56;
+          const clampedTop =
+            typeof window !== 'undefined'
+              ? Math.max(64, Math.min(rawTop, window.innerHeight - 68))
+              : rawTop;
+          const estimatedWidth = 310;
+          const rawLeft = rect.left + rect.width / 2 - estimatedWidth / 2;
+          const clampedLeft =
+            typeof window !== 'undefined'
+              ? Math.max(12, Math.min(rawLeft, window.innerWidth - estimatedWidth - 12))
+              : rawLeft;
+
+          return (
+            <div
+              data-selection-toolbar="true"
+              role="toolbar"
+              aria-label={t.highlightSelectionTitle(
+                uiLang === 'zh' ? '選取字詞' : 'Selected text'
+              )}
+              onMouseDown={(e) => e.preventDefault()}
+              style={{ top: `${clampedTop}px`, left: `${clampedLeft}px` }}
+              className="fixed z-40 rounded-lg border border-stone-300 dark:border-stone-700 bg-white/95 dark:bg-[#181A1E]/95 backdrop-blur-sm shadow-md px-2.5 py-1.5 flex items-center gap-2 max-w-[calc(100vw-24px)]"
+            >
+              <Highlighter
+                aria-hidden="true"
+                className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0"
+              />
+
+              <div className="flex items-center gap-1.5">
+                {HIGHLIGHT_COLORS.map((color) => {
+                  const meta = HIGHLIGHT_PALETTE[color];
+                  const label = uiLang === 'zh' ? meta.labelZh : meta.labelEn;
+                  return (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => handleHighlightSelection(color)}
+                      aria-label={t.highlightSelectionTitle(label)}
+                      title={t.highlightSelectionTitle(label)}
+                      className={`w-7 h-7 rounded-full border transition-transform hover:scale-110 cursor-pointer ${meta.swatchClass}`}
+                    />
+                  );
+                })}
+              </div>
+
+              <span
+                aria-hidden="true"
+                className="h-5 w-px bg-stone-200 dark:bg-stone-700"
+              />
+
+              <button
+                type="button"
+                onClick={handleStartAnnotateSelection}
+                className="h-8 px-2.5 rounded-md bg-[#1E3A5F] dark:bg-[#7DA2D1] text-white dark:text-[#111315] text-xs font-medium hover:opacity-90 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <MessageSquarePlus className="w-3.5 h-3.5" />
+                <span>{t.annotateSelection}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={clearBrowserSelection}
+                aria-label={t.closeSearch}
+                className="w-7 h-7 rounded inline-flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          );
+        })()}
 
       {/* Always-Available Floating Back to Top Button */}
       <button

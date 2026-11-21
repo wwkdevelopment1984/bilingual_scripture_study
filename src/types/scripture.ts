@@ -51,6 +51,13 @@ export interface BilingualChapterResponse {
     en: string;
     zh: string;
   };
+  intro?: {
+    en: string;
+    zh: string;
+  };
+  summaryTranslated?: {
+    zh?: boolean;
+  };
   verses: AlignedVerse[];
   footnotes?: {
     en: Record<string, ScriptureFootnote>;
@@ -110,3 +117,21 @@ export interface ScriptureSearchResponse {
   hasMore: boolean;
   results: ScriptureSearchResult[];
 }
+
+export type HighlightColor = 'amber' | 'sage' | 'lapis' | 'rose';
+export type StudyScope = 'verse' | 'selection';
+
+export interface VerseStudyAnnotation {
+  id: string;
+  scope: StudyScope;
+  verse: number;
+  lang?: 'en' | 'zh';
+  start?: number;
+  end?: number;
+  selectedText?: string;
+  color: HighlightColor | null;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
